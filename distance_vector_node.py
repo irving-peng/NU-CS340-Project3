@@ -1,108 +1,168 @@
-from simulator.node import Node
+import copy
 import json
+import math
+
+from simulator.node import Node
+
+
+class Distance_Vector:
+    def __init__(self, cost: int, path: list):
+        self.cost = cost
+        self.path = path
+
+    def is_newer_than(self, other: int):
+        return self.time > other
+
+    def from_str(self, message: str):
+        json_value = json.loads(message)
+        self.from_map(json_value)
+
+    def from_map(self, json_value):
+        self.cost = int(json_value["cost"])
+        self.path = int(json_value["path"])
+
+    def __str__(self):
+        return json.dumps(
+            self.as_dict()
+        )
+
+    def __repr__(self):
+        return str(self)
+
+    def __eq__(self, other):
+        return self.cost == other.cost and self.path == other.path
+
+    def as_dict(self):
+        return {
+            "cost": self.cost,
+            "path": self.path
+        }
+
 
 class Distance_Vector_Node(Node):
     def __init__(self, id):
         super().__init__(id)
-        self.distance_vector = {self.id: (0, self.id, [self.id])}
-        self.neighbors = {}
+        self.my_dvs = {}
+        self.neighbor_dvs = {}
+        self.neighbor_seq_nums = {}
+        self.link_costs = {}
+        self.seq_num = 0
 
     def __str__(self):
-        dv_str = ", ".join([f"{d}: (cost={c}, next_hop={h}, path={p})"
-                            for d, (c, h, p) in self.distance_vector.items()])
-        return f"Node {self.id} - Distance Vector: [{dv_str}]"
+        message = {}
+        for dst, val in self.my_dvs.items():
+            message[dst] = val.as_dict()
+
+        message[-1] = self.seq_num
+        self.seq_num += 1
+
+        return copy.deepcopy(json.dumps(message))
 
     def link_has_been_updated(self, neighbor, latency):
-        neighbor = int(neighbor)
-
         if latency == -1:
-            if neighbor in self.neighbors:
-                self.logging.debug(f"Deleting link to neighbor {neighbor} at Node {self.id}")
-                del self.neighbors[neighbor]
-                self.invalidate_paths(neighbor)
+            del self.link_costs[neighbor]
+            del self.neighbor_dvs[neighbor]
+
         else:
-            self.logging.debug(f"Updating link to neighbor {neighbor} with latency {latency} at Node {self.id}")
-            old_latency = self.neighbors.get(neighbor, float('inf'))
-            self.neighbors[neighbor] = latency
+            self.link_costs[neighbor] = latency
 
-            # If the link cost increased, invalidate affected paths
-            if latency > old_latency:
-                self.invalidate_paths(neighbor)
+        self.recompute_dvs()
+        pass
 
-        # Update the distance vector for this direct neighbor
-        updated = False
-        if neighbor not in self.distance_vector or self.distance_vector[neighbor][0] > latency:
-            self.distance_vector[neighbor] = (latency, neighbor, [self.id, neighbor])
-            updated = True
+    def recompute_dvs(self):
+        old_dvs = copy.deepcopy(self.my_dvs)
+        self.my_dvs = {}
 
-        if updated:
-            self.flood_distance_vector()
+        for neighbor, link_cost in self.link_costs.items():
+            self.my_dvs[neighbor] = Distance_Vector(cost=link_cost, path=[self.id, neighbor])
 
-    def invalidate_paths(self, neighbor):
-        updated = False
-        to_remove = []
+        # for neighbor, value in self.link_costs.items():
+        #     cost = value[0]
+        #     time = value[1]
+        #
+        #     self.my_dvs[frozenset((self.id, neighbor))] = Distance_Vector_Edge(cost=cost, path=[self.id, neighbor],
+        #                                                                        time=time)
+        for source, dvs in self.neighbor_dvs.items():
+            for destination, dv in dvs.items():
+                self.recompute_single_dv(src=source, dst=destination, dv=dv)
 
-        for destination, (cost, next_hop, path) in self.distance_vector.items():
-            if neighbor in path and next_hop == neighbor:
-                to_remove.append(destination)
+        if self.my_dvs != old_dvs:
+            self.broadcast_to_neighbors()
 
-        # Remove invalid paths
-        for destination in to_remove:
-            del self.distance_vector[destination]
-            updated = True
-            self.logging.debug(f"Invalidated path to {destination} via {neighbor} at Node {self.id}")
+    def recompute_single_dv(self, src: int, dst: int, dv: Distance_Vector):
+        if src not in self.link_costs:
+            return
+        new_cost = dv.cost + self.link_costs[src]
+        if dst not in self.my_dvs or (dst in self.my_dvs and new_cost < self.my_dvs[dst].cost):
+            new_path = [self.id] + copy.deepcopy(dv.path)
+            self.my_dvs[dst] = Distance_Vector(cost=new_cost, path=new_path)
 
-        if updated:
-            self.flood_distance_vector()
+    def broadcast_to_neighbors(self):
+        self.send_to_neighbors(str(self))
+        pass
 
+    # Fill in this function
     def process_incoming_routing_message(self, m):
-        message = json.loads(m)
-        sender = int(message["sender"])
-        incoming_vector = message["distance_vector"]
-        self.logging.debug(f"Received routing message from {sender}: {incoming_vector}")
-        updated = False
+        _neighbor_dvs = json.loads(m)
+        print(_neighbor_dvs)
+        seq_num = _neighbor_dvs['-1']
+        del _neighbor_dvs['-1']
 
-        if sender not in self.neighbors:
-            self.logging.warning(f"Unknown sender {sender}, adding with infinite cost")
-            self.neighbors[sender] = float('inf')
+        changed = False
 
-        for destination, (cost_to_dest, next_hop, path) in incoming_vector.items():
-            destination = int(destination)
-            cost_to_dest = float(cost_to_dest)
-            next_hop = int(next_hop)
-            path = [int(node) for node in path]
 
-            if self.id in path:
-                self.logging.debug(f"Detected loop for destination {destination}, skipping update")
-                continue
+        neighbor = int(_neighbor_dvs[next(iter(_neighbor_dvs))]['path'][0])
+        to_delete = []
+        if neighbor not in self.neighbor_dvs:
+            self.neighbor_dvs[neighbor] = {}
 
-            link_cost = self.neighbors.get(sender, float('inf'))
-            new_cost = cost_to_dest + link_cost
-            new_path = path + [self.id]
+        if neighbor in self.neighbor_seq_nums and seq_num < self.neighbor_seq_nums[neighbor]:
+            return
 
-            if destination not in self.distance_vector:
-                self.distance_vector[destination] = (new_cost, sender, new_path)
-                updated = True
+        for dst, value in copy.deepcopy(self.neighbor_dvs[neighbor]).items():
+            to_delete.append(dst)
+
+        for dst_str, value in _neighbor_dvs.items():
+            dst = int(dst_str)
+            if dst in to_delete:
+                to_delete.remove(dst)
+
+            link = Distance_Vector(cost=value['cost'], path=value['path'])
+
+            changed = self.process_neighbor_dv(src=neighbor, dst=dst, dv=link, seq_num=seq_num) or changed
+
+        for dst in to_delete:
+            del self.neighbor_dvs[neighbor][dst]
+            changed = True
+
+        self.neighbor_seq_nums[neighbor] = seq_num
+
+        if changed:
+            self.recompute_dvs()
+
+    def process_neighbor_dv(self, src: int, dst: int, dv: Distance_Vector, seq_num: int):
+        if dst in self.neighbor_dvs[src]:
+            if self.id in dv.path:
+                del self.neighbor_dvs[src][dst]
+                return True
+
+            self.neighbor_dvs[src][dst] = dv
+            return True
+        else:
+            if self.id in dv.path:
+                return False
             else:
-                current_cost, current_hop, current_path = self.distance_vector[destination]
-                if new_cost < current_cost:
-                    self.distance_vector[destination] = (new_cost, sender, new_path)
-                    updated = True
+                self.neighbor_dvs[src][dst] = dv
+                return True
 
-        if updated:
-            self.flood_distance_vector()
-
+    # Return a neighbor, -1 if no path to destination
     def get_next_hop(self, destination):
-        destination = int(destination)
-        if destination in self.distance_vector:
-            next_hop = self.distance_vector[destination][1]
-            return next_hop
-        return -1
+        # if self.id == 1 and destination == 4:
+        #     print(" ")
+        print(self.my_dvs)
+        print(self.neighbor_dvs)
+        if destination in self.my_dvs:
+            if self.my_dvs[destination].cost < float('inf'):
+                return copy.deepcopy(self.my_dvs[destination].path)[1]
 
-    def flood_distance_vector(self):
-        message = json.dumps({
-            "sender": self.id,
-            "distance_vector": {str(dest): [cost, next_hop, path]
-                                for dest, (cost, next_hop, path) in self.distance_vector.items()}
-        })
-        self.send_to_neighbors(message)
+        return -1

@@ -1,23 +1,111 @@
 from simulator.node import Node
+import json
+import heapq
 
 
 class Link_State_Node(Node):
     def __init__(self, id):
         super().__init__(id)
+        self.dataBase = {}
+        self.sequenceNumbers = {}
+        self.neighbors = {}
 
     # Return a string
     def __str__(self):
-        return "Rewrite this function to define your node dump printout"
+        return (
+            f"Node {self.id}\n"
+            f"Neighbors: {self.neighbors}\n"
+            f"Link State Database: {self.dataBase}\n"
+            f"Sequence Numbers: {self.sequenceNumbers}\n"
+        )
+
 
     # Fill in this function
     def link_has_been_updated(self, neighbor, latency):
         # latency = -1 if delete a link
-        pass
+        if latency == -1: #delete the link if -1
+            if neighbor in self.neighbors:
+                del self.neighbors[neighbor]
+        else:
+            self.neighbors[neighbor] = latency #update the cost
+        
+        sequenceNumber = self.sequenceNumbers.get((self.id, neighbor), 0)
+        newSequenceNumber = sequenceNumber +  1
+        self.sequenceNumbers[(self.id, neighbor)] = newSequenceNumber
+        self.dataBase[(self.id, neighbor)] = latency
+        link_dict = {
+            'src' : self.id,
+            'dst' : neighbor,
+            'cost' : latency,
+            'seq_num' : newSequenceNumber
+        }
+        self.floodToState(link_dict)
+        if latency != -1:
+            self.refloodToLinks()
+
+
+        
 
     # Fill in this function
     def process_incoming_routing_message(self, m):
-        pass
+        message = json.loads(m)
+        source = message['src']
+        destination  = message['dst']
+        cost = message['cost']
+        sequenceNumber = message['seq_num']
 
-    # Return a neighbor, -1 if no path to destination
+        if (source, destination) not in self.sequenceNumbers or sequenceNumber > self.sequenceNumbers[(source, destination)]:
+            self.dataBase[(source, destination)] = cost
+            self.sequenceNumbers[(source, destination)] = sequenceNumber
+            self.floodToState(message)
+    
+    def floodToState(self, link_dict):
+        message = json.dumps(link_dict)
+        self.send_to_neighbors(message)
+
+    def refloodToLinks(self):
+        for (source, destination), cost in self.dataBase.items():
+            sequenceNumber = self.sequenceNumbers.get((source, destination), 0)
+            link_dict = {
+                'src': source,
+                'dst': destination,
+                'cost': cost,
+                'seq_num': sequenceNumber
+            }
+            self.floodToState(link_dict)
+
+
     def get_next_hop(self, destination):
+        visited = set()
+        distances = {self.id : 0}
+        previousNodes = {self.id : None}
+        pq = [(0, self.id)]
+        while pq:
+            currentDistance, currentNode = heapq.heappop(pq)
+
+            if currentNode == destination:
+                while previousNodes[currentNode] != self.id:
+                    currentNode = previousNodes[currentNode]
+                return currentNode
+            
+            visited.add(currentNode)
+            
+            for (source, dst), cost in self.dataBase.items():
+                if source == currentNode:
+                    neighbor = dst
+                elif dst == currentNode:
+                    neighbor = source
+                else:
+                    continue
+                
+                if neighbor in visited:
+                    continue
+
+                updateDistance = currentDistance + cost
+
+                if neighbor not in distances or updateDistance < distances[neighbor]:
+                    distances[neighbor] = updateDistance
+                    previousNodes[neighbor] = currentNode
+                    heapq.heappush(pq, (updateDistance, neighbor) )
+
         return -1
