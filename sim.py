@@ -8,12 +8,6 @@ from simulator.event_queue import Event_Queue
 
 class Sim(Topology):
 
-    logging.basicConfig(
-    level=logging.DEBUG,  # Set to DEBUG level to see all logs
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-    )
-
     def __init__(self, algorithm, event_file, step='NORMAL'):
         super().__init__(algorithm, step)
         self.load_command_file(event_file)

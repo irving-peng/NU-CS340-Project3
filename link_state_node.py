@@ -15,7 +15,7 @@ class Link_State_Node(Node):
         return (
             f"Node {self.id}\n"
             f"Neighbors: {self.neighbors}\n"
-            f"Link State Database: {self.dataBase}\n"
+            f"Database: {self.dataBase}\n"
             f"Sequence Numbers: {self.sequenceNumbers}\n"
         )
 
@@ -26,22 +26,35 @@ class Link_State_Node(Node):
         if latency == -1: #delete the link if -1
             if neighbor in self.neighbors:
                 del self.neighbors[neighbor]
+            latency = float('inf')
         else:
             self.neighbors[neighbor] = latency #update the cost
         
         sequenceNumber = self.sequenceNumbers.get((self.id, neighbor), 0)
         newSequenceNumber = sequenceNumber +  1
         self.sequenceNumbers[(self.id, neighbor)] = newSequenceNumber
-        self.dataBase[(self.id, neighbor)] = latency
-        link_dict = {
+        self.dataBase[(self.id, neighbor)] = latency #update in the database
+        link_dict = { #dictionary
             'src' : self.id,
             'dst' : neighbor,
             'cost' : latency,
             'seq_num' : newSequenceNumber
         }
-        self.floodToState(link_dict)
-        if latency != -1:
-            self.refloodToLinks()
+        self.floodToState(link_dict) #flood to other links
+        if latency == float('inf'): # handle the infinity
+            updateDatabase = {}
+            for (source, destination), cost in self.dataBase.items():
+                if source != neighbor and destination != neighbor:
+                    updateDatabase[(source, destination)] = cost
+            self.dataBase = updateDatabase
+            updateSequenceNumbers = {}
+
+            for (source, destination), sequenceNumber in self.sequenceNumbers.items():
+                if source != neighbor and destination != neighbor:
+                    updateSequenceNumbers[(source, destination)] = sequenceNumber
+            self.sequenceNumbers  = updateSequenceNumbers
+        
+        self.refloodToLinks() 
 
 
         
@@ -55,7 +68,11 @@ class Link_State_Node(Node):
         sequenceNumber = message['seq_num']
 
         if (source, destination) not in self.sequenceNumbers or sequenceNumber > self.sequenceNumbers[(source, destination)]:
-            self.dataBase[(source, destination)] = cost
+            if cost == float('inf'):
+                if (source, destination) in self.dataBase:
+                    del self.dataBase[(source, destination)]
+            else:
+                self.dataBase[(source, destination)] = cost
             self.sequenceNumbers[(source, destination)] = sequenceNumber
             self.floodToState(message)
     
@@ -79,8 +96,8 @@ class Link_State_Node(Node):
         visited = set()
         distances = {self.id : 0}
         previousNodes = {self.id : None}
-        pq = [(0, self.id)]
-        while pq:
+        pq = [(0, self.id)] #heap
+        while pq: #iterate until the heap is null
             currentDistance, currentNode = heapq.heappop(pq)
 
             if currentNode == destination:
@@ -88,7 +105,7 @@ class Link_State_Node(Node):
                     currentNode = previousNodes[currentNode]
                 return currentNode
             
-            visited.add(currentNode)
+            visited.add(currentNode)#mark visited
             
             for (source, dst), cost in self.dataBase.items():
                 if source == currentNode:
@@ -97,7 +114,7 @@ class Link_State_Node(Node):
                     neighbor = source
                 else:
                     continue
-                
+
                 if neighbor in visited:
                     continue
 
